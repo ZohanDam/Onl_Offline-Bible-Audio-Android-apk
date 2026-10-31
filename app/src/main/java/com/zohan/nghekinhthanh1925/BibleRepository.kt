@@ -91,7 +91,9 @@ class BibleRepository(private val context: Context) : Closeable {
     ).use { cursor -> if (cursor.moveToFirst()) cursor.getString(0).toLongOrNull() else null }
 
     fun chapter(globalOrder: Int, audioVersion: String = "VIE1925"): BibleChapter? {
-        if (audioVersion in ENGLISH_AUDIO_VERSIONS) return chapters(audioVersion).firstOrNull { it.globalOrder == globalOrder }
+        if (audioVersion in ENGLISH_AUDIO_VERSIONS) return englishChapter(
+            audioVersion, "c.global_order = ?", arrayOf(globalOrder.toString())
+        )
         return database.rawQuery(
             """
             SELECT c.global_order, c.book_code, b.name,
@@ -107,9 +109,9 @@ class BibleRepository(private val context: Context) : Closeable {
     }
 
     fun chapter(bookCode: String, chapterNumber: Int, audioVersion: String = "VIE1925"): BibleChapter? {
-        if (audioVersion in ENGLISH_AUDIO_VERSIONS) return chapters(audioVersion).firstOrNull {
-            it.bookCode == bookCode && it.chapter == chapterNumber
-        }
+        if (audioVersion in ENGLISH_AUDIO_VERSIONS) return englishChapter(
+            audioVersion, "c.book_code = ? AND c.chapter_number = ?", arrayOf(bookCode, chapterNumber.toString())
+        )
         return database.rawQuery(
             """
             SELECT c.global_order, c.book_code, b.name,
@@ -146,24 +148,46 @@ class BibleRepository(private val context: Context) : Closeable {
         }
     }
 
+    private fun englishChapter(audioVersion: String, selection: String, arguments: Array<String>): BibleChapter? {
+        return database.rawQuery(
+            """
+            SELECT c.global_order, c.book_code, b.name, c.chapter_number, c.audio_filename, c.audio_url
+            FROM audio_chapters c
+            JOIN version_books b ON b.book_code = c.book_code AND b.version_code = 'NIV'
+            WHERE c.version_code = ? AND $selection LIMIT 1
+            """.trimIndent(), arrayOf(audioVersion, *arguments)
+        ).use { cursor -> if (cursor.moveToFirst()) cursor.toChapter().copy(audioVersion = audioVersion) else null }
+    }
+
     override fun close() {
         if (database.isOpen) database.close()
     }
 
     private fun openDatabase(): SQLiteDatabase {
+        synchronized(DATABASE_LOCK) { return openDatabaseLocked() }
+    }
+
+    private fun openDatabaseLocked(): SQLiteDatabase {
         val target = context.getDatabasePath(DATABASE_NAME)
         val assetSize = context.assets.open(DATABASE_ASSET).use { it.available().toLong() }
-        val digest = MessageDigest.getInstance("SHA-256")
-        context.assets.open(DATABASE_ASSET).use { input ->
-            val buffer = ByteArray(8192)
-            while (true) {
-                val count = input.read(buffer)
-                if (count < 0) break
-                digest.update(buffer, 0, count)
-            }
-        }
-        val assetHash = digest.digest().joinToString("") { "%02x".format(it) }
         val databasePreferences = context.getSharedPreferences("bibleDatabase", Context.MODE_PRIVATE)
+        val installed = context.packageManager.getPackageInfo(context.packageName, 0)
+        val assetIdentity = "${installed.lastUpdateTime}:${installed.applicationInfo?.sourceDir}:$assetSize"
+        val cachedHash = databasePreferences.getString("assetHash", null)
+        val assetHash = if (databasePreferences.getString("assetIdentity", null) == assetIdentity &&
+            cachedHash?.matches(Regex("[a-f0-9]{64}")) == true) cachedHash else {
+            // Packaged assets cannot change without an APK update. Hash once per installation.
+            val digest = MessageDigest.getInstance("SHA-256")
+            context.assets.open(DATABASE_ASSET).use { input ->
+                val buffer = ByteArray(32 * 1024)
+                while (true) {
+                    val count = input.read(buffer)
+                    if (count < 0) break
+                    digest.update(buffer, 0, count)
+                }
+            }
+            digest.digest().joinToString("") { "%02x".format(it) }
+        }
         if (!target.exists() || target.length() != assetSize ||
             databasePreferences.getString("assetHash", null) != assetHash) {
             target.parentFile?.mkdirs()
@@ -178,7 +202,9 @@ class BibleRepository(private val context: Context) : Closeable {
                 temporary.copyTo(target, overwrite = true)
                 temporary.delete()
             }
-            databasePreferences.edit().putString("assetHash", assetHash).apply()
+        }
+        if (cachedHash != assetHash || databasePreferences.getString("assetIdentity", null) != assetIdentity) {
+            databasePreferences.edit().putString("assetHash", assetHash).putString("assetIdentity", assetIdentity).apply()
         }
         return SQLiteDatabase.openDatabase(
             target.absolutePath,
@@ -201,5 +227,6 @@ class BibleRepository(private val context: Context) : Closeable {
     companion object {
         private const val DATABASE_ASSET = "bible.db"
         private const val DATABASE_NAME = "vie1925.db"
+        private val DATABASE_LOCK = Any()
     }
 }

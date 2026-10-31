@@ -27,6 +27,8 @@ original private key. Versions 2.15 and later share the current signing identity
 - Read VIE1925, VIE2010, or NIV offline. Each has 66 books and 1,189 chapters.
 - Audio is streamed or downloaded inside the app, never bundled with the APK.
   Download a chapter, a book, or the whole Bible; downloads use up to 12 workers.
+- Download storage counts load in the background. Notifications are rate-limited;
+  idle download workers exit instead of repeatedly waking the CPU.
 - VIE1925 audio needs about 1.16 GB; NIV audio needs about 1.08 GB.
   NIVUK (David Suchet) needs about 1.20 GB.
   VIE2010 text uses VIE1925 audio, not a VIE2010 recording.

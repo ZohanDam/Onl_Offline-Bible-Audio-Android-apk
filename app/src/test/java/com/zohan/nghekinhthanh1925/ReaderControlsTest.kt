@@ -333,6 +333,27 @@ class ReaderControlsTest {
         }
     }
 
+    @Test fun downloadsOpenBeforeBackgroundStorageScanCompletes() {
+        preferences.edit().putString("textVersion", "NIV").commit()
+        withReader { activity ->
+            val release = java.util.concurrent.CountDownLatch(1)
+            val executor = MainActivity::class.java.getDeclaredField("backgroundExecutor").apply { isAccessible = true }
+                .get(activity) as java.util.concurrent.ExecutorService
+            executor.execute { release.await(10, java.util.concurrent.TimeUnit.SECONDS) }
+            try {
+                control(activity, "Downloads").performClick()
+                val dialog = ShadowAlertDialog.getLatestAlertDialog()
+                val labels = views(dialog.window!!.decorView).filterIsInstance<TextView>().map { it.text.toString() }
+                assertTrue(dialog.isShowing)
+                assertTrue(labels.contains("Checking downloads..."))
+                assertTrue(views(dialog.window!!.decorView).any { it.tag == "downloadAudio:NIVUK" })
+                dialog.dismiss()
+            } finally {
+                release.countDown()
+            }
+        }
+    }
+
     @Test fun downloadRecordingOptionsStayOrderedAndVisibleWhileSwitching() {
         preferences.edit().putString("textVersion", "NIV").putInt("lastOrder", 3).commit()
         withReader { activity ->
@@ -355,6 +376,49 @@ class ReaderControlsTest {
             assertFalse(PlaybackStateStore.playWhenReady)
             assertTrue(views(dialog.window!!.decorView).filterIsInstance<TextView>().any { it.text.toString().contains("NIVUK") })
             dialog.dismiss()
+        }
+    }
+
+    @Test fun downloadCountsArriveAsynchronouslyWithoutChangingRecording() {
+        preferences.edit().putString("textVersion", "NIV").commit()
+        withReader { activity ->
+            control(activity, "Downloads").performClick()
+            val dialog = ShadowAlertDialog.getLatestAlertDialog()
+            val executor = MainActivity::class.java.getDeclaredField("backgroundExecutor").apply { isAccessible = true }
+                .get(activity) as java.util.concurrent.ExecutorService
+            executor.submit {}.get(10, java.util.concurrent.TimeUnit.SECONDS)
+            shadowOf(Looper.getMainLooper()).idle()
+            val labels = views(dialog.window!!.decorView).filterIsInstance<TextView>().map { it.text.toString() }
+            assertFalse(labels.contains("Checking downloads..."))
+            assertTrue(labels.any { it.matches(Regex("\\d+ / 1189 chapters")) })
+            assertEquals("NIVUK", PlaybackStateStore.audioVersion)
+            assertFalse(PlaybackStateStore.playWhenReady)
+            dialog.dismiss()
+        }
+    }
+
+    @Test fun closingDownloadDialogCancelsLateConfirmation() {
+        preferences.edit().putString("textVersion", "NIV").commit()
+        withReader { activity ->
+            val release = java.util.concurrent.CountDownLatch(1)
+            val executor = MainActivity::class.java.getDeclaredField("backgroundExecutor").apply { isAccessible = true }
+                .get(activity) as java.util.concurrent.ExecutorService
+            executor.execute { release.await(10, java.util.concurrent.TimeUnit.SECONDS) }
+            try {
+                control(activity, "Downloads").performClick()
+                val dialog = ShadowAlertDialog.getLatestAlertDialog()
+                views(dialog.window!!.decorView).filterIsInstance<Button>()
+                    .single { it.text.toString().startsWith("Download entire Bible") }.performClick()
+                dialog.dismiss()
+                shadowOf(Looper.getMainLooper()).idle()
+                release.countDown()
+                executor.submit {}.get(10, java.util.concurrent.TimeUnit.SECONDS)
+                shadowOf(Looper.getMainLooper()).idle()
+                assertSame(dialog, ShadowAlertDialog.getLatestAlertDialog())
+                assertFalse(dialog.isShowing)
+            } finally {
+                release.countDown()
+            }
         }
     }
 

@@ -26,12 +26,13 @@ class AudioDownloadStore(private val context: Context) {
     }
 
     fun enqueue(chapters: Collection<BibleChapter>): Int {
+        val missing = chapters.filter { availableFile(it) == null }
         val added = synchronized(LOCK) {
             val queued = readOrders(KEY_QUEUED)
             val failed = readOrders(KEY_FAILED)
             var count = 0
-            chapters.forEach { chapter ->
-                if (availableFile(chapter) == null && queued.add(chapter.downloadKey)) {
+            missing.forEach { chapter ->
+                if (queued.add(chapter.downloadKey)) {
                     failed.remove(chapter.downloadKey)
                     count += 1
                 }
@@ -53,9 +54,20 @@ class AudioDownloadStore(private val context: Context) {
     }
 
     fun summary(chapters: Collection<BibleChapter>): DownloadSummary {
-        val queued = queuedOrders()
-        val active = activeOrders()
-        val failed = failedOrders()
+        val (queued, active, failed) = synchronized(LOCK) {
+            Triple(readOrders(KEY_QUEUED), readOrders(KEY_ACTIVE), readOrders(KEY_FAILED))
+        }
+        val wanted = chapters.mapTo(HashSet()) { it.filename }
+        val sizes = HashMap<String, Long>()
+        // Enumerate existing files instead of probing every missing chapter twice.
+        listOf(legacyDirectory, audioDirectory).distinct().forEach { directory ->
+            directory.listFiles()?.forEach { file ->
+                if (file.name in wanted) {
+                    val size = file.length()
+                    if (size > 0L) sizes[file.name] = size
+                }
+            }
+        }
         var downloaded = 0
         var downloadedBytes = 0L
         var queuedCount = 0
@@ -63,11 +75,11 @@ class AudioDownloadStore(private val context: Context) {
         var failedCount = 0
 
         chapters.forEach { chapter ->
-            val file = availableFile(chapter)
+            val size = sizes[chapter.filename]
             when {
-                file != null -> {
+                size != null -> {
                     downloaded += 1
-                    downloadedBytes += file.length()
+                    downloadedBytes += size
                 }
                 chapter.downloadKey in active -> runningCount += 1
                 chapter.downloadKey in queued -> queuedCount += 1
@@ -107,7 +119,9 @@ class AudioDownloadStore(private val context: Context) {
         var deleted = 0
         chapters.forEach { chapter ->
             val files = listOf(fileFor(chapter), File(legacyDirectory, chapter.filename))
-            if (files.any { it.exists() && it.delete() }) deleted += 1
+            var removed = false
+            files.distinct().forEach { if (it.exists() && it.delete()) removed = true }
+            if (removed) deleted += 1
             failed.remove(chapter.downloadKey)
         }
         writeOrders(KEY_FAILED, failed)
@@ -118,6 +132,10 @@ class AudioDownloadStore(private val context: Context) {
 
     fun queuedOrders(): MutableSet<Int> = synchronized(LOCK) {
         readOrders(KEY_QUEUED)
+    }
+
+    fun isQueued(order: Int): Boolean = synchronized(LOCK) {
+        preferences.getStringSet(KEY_QUEUED, emptySet()).orEmpty().contains(order.toString())
     }
 
     fun activeOrders(): MutableSet<Int> = synchronized(LOCK) {
@@ -150,10 +168,14 @@ class AudioDownloadStore(private val context: Context) {
     }
 
     fun discard(order: Int) {
+        discard(setOf(order))
+    }
+
+    fun discard(orders: Set<Int>) {
         synchronized(LOCK) {
-            writeOrders(KEY_QUEUED, readOrders(KEY_QUEUED).apply { remove(order) })
-            writeOrders(KEY_ACTIVE, readOrders(KEY_ACTIVE).apply { remove(order) })
-            writeOrders(KEY_FAILED, readOrders(KEY_FAILED).apply { remove(order) })
+            writeOrders(KEY_QUEUED, readOrders(KEY_QUEUED).apply { removeAll(orders) })
+            writeOrders(KEY_ACTIVE, readOrders(KEY_ACTIVE).apply { removeAll(orders) })
+            writeOrders(KEY_FAILED, readOrders(KEY_FAILED).apply { removeAll(orders) })
         }
     }
 

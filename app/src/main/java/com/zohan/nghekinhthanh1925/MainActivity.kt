@@ -605,23 +605,47 @@ class MainActivity : Activity() {
 
     private fun showDownloadsDialog() {
         val content = vertical()
+        val request = java.util.concurrent.atomic.AtomicInteger()
+        var closed = false
         fun refreshContent() {
+            val token = request.incrementAndGet()
+            val selectedChapters = chapters
+            val selectedChapter = currentChapter
+            val isCurrent = { !closed && request.get() == token }
             content.removeAllViews()
-            content.addView(downloadsContent { refreshContent() }, matchWrap())
+            content.addView(downloadsContent(null, null, null, isCurrent) { refreshContent() }, matchWrap())
+            backgroundExecutor.execute {
+                if (request.get() != token) return@execute
+                val summary = downloads.summary(selectedChapters)
+                val bookSummary = downloads.summary(selectedChapters.filter { it.bookCode == selectedChapter.bookCode })
+                val chapterDownloaded = downloads.availableFile(selectedChapter) != null
+                handler.post {
+                    if (!isCurrent() || isFinishing || isDestroyed) return@post
+                    if (currentChapter.downloadKey != selectedChapter.downloadKey || chapters !== selectedChapters) {
+                        refreshContent()
+                        return@post
+                    }
+                    content.removeAllViews()
+                    content.addView(downloadsContent(summary, bookSummary, chapterDownloaded, isCurrent) { refreshContent() }, matchWrap())
+                }
+            }
         }
         refreshContent()
         AlertDialog.Builder(this)
             .setView(content)
             .setNegativeButton(uiText("Đóng", "Close"), null)
+            .setOnDismissListener { closed = true; request.incrementAndGet() }
             .show()
     }
 
-    private fun downloadsContent(recordingChanged: () -> Unit): View {
+    private fun downloadsContent(
+        summary: DownloadSummary?, currentBookSummary: DownloadSummary?, chapterDownloaded: Boolean?,
+        isCurrent: () -> Boolean,
+        recordingChanged: () -> Unit
+    ): View {
         val chapters = this.chapters
         val currentChapter = this.currentChapter
-        val summary = downloads.summary(chapters)
         val currentBookChapters = chapters.filter { it.bookCode == currentChapter.bookCode }
-        val currentBookSummary = downloads.summary(currentBookChapters)
         val content = vertical().apply {
             setPadding(dp(20), dp(10), dp(20), dp(8))
         }
@@ -635,8 +659,10 @@ class MainActivity : Activity() {
             }
         }
         content.addView(statusCard(
-            uiText("${summary.downloaded} / ${chapters.size} chương", "${summary.downloaded} / ${chapters.size} chapters"),
-            uiText("${formatBytes(summary.downloadedBytes)} đã lưu", "${formatBytes(summary.downloadedBytes)} saved") +
+            if (summary == null) uiText("Đang kiểm tra audio...", "Checking downloads...") else
+                uiText("${summary.downloaded} / ${chapters.size} chương", "${summary.downloaded} / ${chapters.size} chapters"),
+            if (summary == null) "" else
+                uiText("${formatBytes(summary.downloadedBytes)} đã lưu", "${formatBytes(summary.downloadedBytes)} saved") +
                 if (summary.running + summary.queued > 0) {
                     uiText("  •  ${summary.running + summary.queued} đang chờ/tải", "  •  ${summary.running + summary.queued} queued/downloading")
                 } else {
@@ -644,7 +670,7 @@ class MainActivity : Activity() {
                 }
         ))
         content.addView(primaryButton(
-            if (downloads.availableFile(currentChapter) != null) {
+            if (chapterDownloaded == true) {
                 uiText("Chương này đã tải", "Chapter downloaded")
             } else {
                 uiText("Tải ${currentChapter.bookName} ${currentChapter.chapter}", "Download ${currentChapter.bookName} ${currentChapter.chapter}")
@@ -654,16 +680,16 @@ class MainActivity : Activity() {
         })
         content.addView(outlinedButton(
             uiText("Tải sách ${currentChapter.bookName} ", "Download ${currentChapter.bookName} ") +
-                "(${currentBookSummary.downloaded}/${currentBookChapters.size})"
+                "(${currentBookSummary?.downloaded ?: "..."}/${currentBookChapters.size})"
         ) {
             enqueueDownloads(currentBookChapters, currentChapter.bookName)
         })
         content.addView(primaryButton(
-            uiText("Tải toàn bộ Kinh Thánh (${summary.downloaded}/${chapters.size})", "Download entire Bible (${summary.downloaded}/${chapters.size})")
+            uiText("Tải toàn bộ Kinh Thánh (${summary?.downloaded ?: "..."}/${chapters.size})", "Download entire Bible (${summary?.downloaded ?: "..."}/${chapters.size})")
         ) {
-            confirmFullDownload(chapters)
+            confirmFullDownload(chapters, isCurrent)
         })
-        if (summary.running + summary.queued > 0) {
+        if (summary != null && summary.running + summary.queued > 0) {
             content.addView(outlinedButton(uiText("Dừng các mục đang tải", "Cancel pending downloads")) {
                 runBackgroundAction(
                     action = { downloads.cancelPending(chapters) },
@@ -681,9 +707,17 @@ class MainActivity : Activity() {
         return ScrollView(this).apply { addView(content) }
     }
 
-    private fun confirmFullDownload(chapters: List<BibleChapter>) {
+    private fun confirmFullDownload(chapters: List<BibleChapter>, isCurrent: () -> Boolean) {
+        backgroundExecutor.execute {
+            val missing = chapters.size - downloads.summary(chapters).downloaded
+            handler.post {
+                if (!isFinishing && !isDestroyed && isCurrent()) showFullDownloadConfirmation(chapters, missing)
+            }
+        }
+    }
+
+    private fun showFullDownloadConfirmation(chapters: List<BibleChapter>, missing: Int) {
         val audioVersion = chapters.first().audioVersion
-        val missing = chapters.count { downloads.availableFile(it) == null }
         if (missing == 0) {
             toast(uiText("Toàn bộ audio đã được tải.", "All audio is already downloaded."))
             return
