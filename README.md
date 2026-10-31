@@ -26,7 +26,13 @@ original private key. Versions 2.15 and later share the current signing identity
 - Audio is streamed or downloaded inside the app, never bundled with the APK.
   Download a chapter, a book, or the whole Bible; downloads use up to 12 workers.
 - VIE1925 audio needs about 1.16 GB; NIV audio needs about 1.08 GB.
+  NIVUK (David Suchet) needs about 1.20 GB.
   VIE2010 text uses VIE1925 audio, not a VIE2010 recording.
+- English audio: NIVUK (David Suchet, Anglicised) is first and the default;
+  NIV (Max McLean) remains selectable. Choose the recording above the player or
+  in Downloads. Changing it preserves play/pause state and starts the chapter
+  from the beginning. Files, positions, download queues, and loops stay separate.
+  Existing NIV files are retained. English text remains NIV, not NIVUK text.
 - Use the speaker icon to hide/show playback controls. Chapter navigation remains
   available. Changing chapters while paused does not start playback.
 - Settings includes font size, VN/EN interface language, day/night icons, and
@@ -113,6 +119,10 @@ Documentation-only cleanup does not require a new app version.
   database first. Data tools require Python 3 and BeautifulSoup (`pip install beautifulsoup4`).
   Offline parser tests: `python -m unittest discover -s tools -p 'test_*.py'`.
 - Content provenance/copyright notices are retained under `app/src/main/assets/`:
-  `VIE1925_SOURCE.txt`, `TEXT_VERSIONS_SOURCE.txt`, and `NIV_AUDIO_SOURCE.txt`.
+  `VIE1925_SOURCE.txt`, `TEXT_VERSIONS_SOURCE.txt`, `NIV_AUDIO_SOURCE.txt`, and `NIVUK_AUDIO_SOURCE.txt`.
   VIE1925 is public domain; VIE2010/NIV are copyrighted and require permission.
   The owner's stated authorization is not a license for third-party redistribution.
+- `tools/import_nivuk_audio.py` imports only the public Suchet NIVUK recording's
+  chapter links and sizes. It validates all 1,189 chapters and preserves existing
+  database content; `archive/nivuk-audio-cache/` allows resuming.
+  No recordings are bundled in the APK.

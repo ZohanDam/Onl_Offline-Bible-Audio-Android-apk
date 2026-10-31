@@ -53,13 +53,13 @@ class BibleRepository(private val context: Context) : Closeable {
     }
 
     fun chapters(audioVersion: String = "VIE1925"): List<BibleChapter> {
-        if (audioVersion == "NIV") {
+        if (audioVersion in ENGLISH_AUDIO_VERSIONS) {
             return database.rawQuery(
                 """
                 SELECT c.global_order, c.book_code, b.name,
                        c.chapter_number, c.audio_filename, c.audio_url
                 FROM audio_chapters c
-                JOIN version_books b ON b.book_code = c.book_code AND b.version_code = c.version_code
+                JOIN version_books b ON b.book_code = c.book_code AND b.version_code = 'NIV'
                 WHERE c.version_code = ? ORDER BY c.global_order
                 """.trimIndent(), arrayOf(audioVersion)
             ).use { cursor ->
@@ -84,14 +84,14 @@ class BibleRepository(private val context: Context) : Closeable {
         }
     }
 
-    fun allAudioChapters(): List<BibleChapter> = chapters() + chapters("NIV")
+    fun allAudioChapters(): List<BibleChapter> = chapters() + ENGLISH_AUDIO_VERSIONS.flatMap { chapters(it) }
 
-    fun nivAudioSizeBytes(): Long? = database.rawQuery(
-        "SELECT value FROM metadata WHERE key = 'niv_audio_bytes'", null
+    fun audioSizeBytes(audioVersion: String): Long? = database.rawQuery(
+        "SELECT value FROM metadata WHERE key = ?", arrayOf("${audioVersion.lowercase(java.util.Locale.ROOT)}_audio_bytes")
     ).use { cursor -> if (cursor.moveToFirst()) cursor.getString(0).toLongOrNull() else null }
 
     fun chapter(globalOrder: Int, audioVersion: String = "VIE1925"): BibleChapter? {
-        if (audioVersion == "NIV") return chapters(audioVersion).firstOrNull { it.globalOrder == globalOrder }
+        if (audioVersion in ENGLISH_AUDIO_VERSIONS) return chapters(audioVersion).firstOrNull { it.globalOrder == globalOrder }
         return database.rawQuery(
             """
             SELECT c.global_order, c.book_code, b.name,
@@ -107,7 +107,7 @@ class BibleRepository(private val context: Context) : Closeable {
     }
 
     fun chapter(bookCode: String, chapterNumber: Int, audioVersion: String = "VIE1925"): BibleChapter? {
-        if (audioVersion == "NIV") return chapters(audioVersion).firstOrNull {
+        if (audioVersion in ENGLISH_AUDIO_VERSIONS) return chapters(audioVersion).firstOrNull {
             it.bookCode == bookCode && it.chapter == chapterNumber
         }
         return database.rawQuery(

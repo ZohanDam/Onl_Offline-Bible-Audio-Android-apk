@@ -91,7 +91,8 @@ class AudioPlayerServiceTest {
         assertEquals("position_1", vietnamese.first().positionKey)
         assertNotEquals(vietnamese.first().positionKey, english.first().positionKey)
         assertEquals("VIE1925", audioVersionForText("VIE2010"))
-        assertEquals("NIV", audioVersionForText("NIV"))
+        assertEquals("NIVUK", audioVersionForText("NIV"))
+        assertEquals("NIV", audioVersionForText("NIV", "NIV"))
     }
 
     @Test fun selectingAndSkippingWhilePausedNeverCreatesPlayer() {
@@ -511,6 +512,105 @@ class AudioPlayerServiceTest {
         seek(25_000)
         shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(1))
         assertTrue(player()!!.currentPosition > PlaybackStateStore.positionMs)
+    }
+
+    @Test fun allThreeRecordingsHaveIndependentFilesQueuesAndPositions() {
+        val all = repository.allAudioChapters()
+        assertEquals(3567, all.size)
+        assertEquals(3567, all.map { it.downloadKey }.toSet().size)
+        assertEquals(3567, all.map { it.filename }.toSet().size)
+        assertEquals(3567, all.map { it.positionKey }.toSet().size)
+        val uk = repository.chapters("NIVUK")
+        assertEquals(1189, uk.size)
+        assertEquals(66, uk.map { it.bookCode }.toSet().size)
+        assertEquals(2_000_001, uk.first().downloadKey)
+        assertTrue(uk.all { it.url.startsWith("https://stream.biblegateway.com/bibles/32/nivuk-suchet/") })
+        assertTrue(uk.all { it.filename.startsWith("NIVUK_") && it.audioVersion == "NIVUK" })
+        assertEquals("NIVUK", repository.chapter("MAT", 1, "NIVUK")!!.audioVersion)
+        assertTrue(repository.audioSizeBytes("NIVUK")!! > 100_000_000L)
+    }
+
+    @Test fun switchingBetweenEnglishRecordingsKeepsPausedAndUsesIndependentPositions() {
+        select(1, "NIV", true)
+        prepare()
+        seek(25_000)
+        action(AudioPlayerService.ACTION_PAUSE)
+        select(1, "NIVUK", false)
+        assertEquals("NIVUK", PlaybackStateStore.audioVersion)
+        assertFalse(PlaybackStateStore.playWhenReady)
+        assertNull(player())
+        val prefs = service.getSharedPreferences("state", Context.MODE_PRIVATE)
+        assertEquals(25_000L, prefs.getLong("position_NIV_1", -1))
+        assertEquals(0L, prefs.getLong("position_NIVUK_1", -1))
+        action(AudioPlayerService.ACTION_RESUME)
+        prepare()
+        assertTrue(player()!!.isPlaying)
+        seek(10_000)
+        action(AudioPlayerService.ACTION_PAUSE)
+        assertEquals(10_000L, prefs.getLong("position_NIVUK_1", -1))
+        assertEquals(25_000L, prefs.getLong("position_NIV_1", -1))
+    }
+
+    @Test fun nivukLoopAndServiceRestartStayOnTheSuchetRecording() {
+        select(3, "NIVUK", false)
+        val loops = PlaybackLoopStore(service)
+        loops.save("NIVUK", PlaybackLoopSelection(true, listOf(3, 1)))
+        select(3, "NIVUK", true)
+        prepare()
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(60))
+        assertEquals(1, PlaybackStateStore.currentOrder)
+        assertEquals("NIVUK", PlaybackStateStore.audioVersion)
+        prepare()
+        controller.destroy()
+        controller = Robolectric.buildService(AudioPlayerService::class.java).create()
+        service = controller.get()
+        service.onStartCommand(null, 0, 1)
+        prepare()
+        assertEquals("NIVUK", PlaybackStateStore.audioVersion)
+        assertTrue(player()!!.isPlaying)
+        assertTrue(PlaybackLoopStore(service).load("NIVUK").enabled)
+        select(1, "NIV", false)
+        assertFalse(loops.load("NIVUK").enabled)
+        assertEquals(listOf(3, 1), loops.load("NIVUK").orders)
+    }
+
+    @Test fun existingNivFileDoesNotMasqueradeAsNivukAndDeletionIsIsolated() {
+        val store = AudioDownloadStore(service)
+        val niv = repository.chapter(1, "NIV")!!
+        val uk = repository.chapter(1, "NIVUK")!!
+        val vi = repository.chapter(1)!!
+        val files = listOf(niv, uk, vi).map { store.targetFile(it) }
+        try {
+            store.targetFile(niv).writeText("original NIV audio")
+            store.targetFile(vi).writeText("original VIE audio")
+            assertNull(store.availableFile(uk))
+            store.enqueue(listOf(uk))
+            assertTrue(uk.downloadKey in store.queuedOrders())
+            assertFalse(niv.downloadKey in store.queuedOrders())
+            store.targetFile(uk).writeText("new Suchet audio")
+            assertEquals(1, store.summary(listOf(uk)).downloaded)
+            assertEquals(1, store.delete(listOf(uk)))
+            assertEquals("original NIV audio", store.availableFile(niv)!!.readText())
+            assertEquals("original VIE audio", store.availableFile(vi)!!.readText())
+            assertNull(store.availableFile(uk))
+        } finally {
+            files.forEach { it.delete() }
+        }
+    }
+
+    @Test fun downloadedNivukPlaysItsOwnLocalFileRatherThanEitherOtherRecording() {
+        val chapter = repository.chapter(1, "NIVUK")!!
+        val file = AudioDownloadStore(service).targetFile(chapter)
+        try {
+            file.writeText("test Suchet recording")
+            select(1, "NIVUK", true)
+            prepare()
+            assertEquals(DataSource.toDataSource(file.absolutePath), shadowOf(player()!!).dataSource)
+            assertTrue(player()!!.isPlaying)
+            assertEquals("NIVUK", PlaybackStateStore.audioVersion)
+        } finally {
+            file.delete()
+        }
     }
 
     @Test @Config(sdk = [34]) fun interruptionPauseActionSavesImmediatelyWithoutWaitingForPoll() {

@@ -99,13 +99,16 @@ class MainActivity : Activity() {
         selectedTextVersion = preferences.getString(KEY_TEXT_VERSION, "VIE1925")
             ?.takeIf { code -> textVersions.any { it.code == code } } ?: "VIE1925"
         if ((PlaybackStateStore.isPlaying || PlaybackStateStore.playWhenReady) &&
-            audioVersionForText(selectedTextVersion) != PlaybackStateStore.audioVersion) {
-            selectedTextVersion = PlaybackStateStore.audioVersion
+            !audioMatchesText(selectedTextVersion, PlaybackStateStore.audioVersion)) {
+            selectedTextVersion = textVersionForAudio(PlaybackStateStore.audioVersion)
         }
         books = repository.books(selectedTextVersion)
         if (!preferences.contains("uiLanguage")) UiLanguage.set(this, selectedTextVersion == "NIV")
         if (!PlaybackStateStore.isPlaying && !PlaybackStateStore.playWhenReady) SleepTimer.restore(this)
-        chapters = repository.chapters(audioVersionForText(selectedTextVersion))
+        val initialAudio = if ((PlaybackStateStore.isPlaying || PlaybackStateStore.playWhenReady) &&
+            audioMatchesText(selectedTextVersion, PlaybackStateStore.audioVersion)) PlaybackStateStore.audioVersion
+            else preferredAudioVersion()
+        chapters = repository.chapters(initialAudio)
         fontSize = preferences.getFloat(KEY_FONT_SIZE, 20f)
         playerPanelVisible = preferences.getBoolean(KEY_PLAYER_PANEL_VISIBLE, true)
         val initialOrder = PlaybackStateStore.currentOrder.takeIf { it > 0 } ?: preferences.getInt(
@@ -322,6 +325,8 @@ class MainActivity : Activity() {
                 gravity = Gravity.CENTER
                 setPadding(0, dp(5), 0, 0)
             }, matchWrap())
+        } else if (selectedTextVersion == "NIV") {
+            container.addView(audioRecordingButton(), matchWrap())
         }
         val timeline = horizontal().apply {
             gravity = Gravity.CENTER_VERTICAL
@@ -599,6 +604,21 @@ class MainActivity : Activity() {
     }
 
     private fun showDownloadsDialog() {
+        val content = vertical()
+        fun refreshContent() {
+            content.removeAllViews()
+            content.addView(downloadsContent { refreshContent() }, matchWrap())
+        }
+        refreshContent()
+        AlertDialog.Builder(this)
+            .setView(content)
+            .setNegativeButton(uiText("Đóng", "Close"), null)
+            .show()
+    }
+
+    private fun downloadsContent(recordingChanged: () -> Unit): View {
+        val chapters = this.chapters
+        val currentChapter = this.currentChapter
         val summary = downloads.summary(chapters)
         val currentBookChapters = chapters.filter { it.bookCode == currentChapter.bookCode }
         val currentBookSummary = downloads.summary(currentBookChapters)
@@ -606,6 +626,14 @@ class MainActivity : Activity() {
             setPadding(dp(20), dp(10), dp(20), dp(8))
         }
         content.addView(dialogTitle(uiText("Tải audio ${currentChapter.audioVersion}", "Audio downloads: ${currentChapter.audioVersion}")))
+        if (selectedTextVersion == "NIV") {
+            ENGLISH_AUDIO_VERSIONS.forEach { version ->
+                content.addView(pickerChoice(audioRecordingName(version), version == currentChapter.audioVersion) {
+                    selectAudioRecording(version)
+                    recordingChanged()
+                }.apply { tag = "downloadAudio:$version" }, matchWrap())
+            }
+        }
         content.addView(statusCard(
             uiText("${summary.downloaded} / ${chapters.size} chương", "${summary.downloaded} / ${chapters.size} chapters"),
             uiText("${formatBytes(summary.downloadedBytes)} đã lưu", "${formatBytes(summary.downloadedBytes)} saved") +
@@ -633,7 +661,7 @@ class MainActivity : Activity() {
         content.addView(primaryButton(
             uiText("Tải toàn bộ Kinh Thánh (${summary.downloaded}/${chapters.size})", "Download entire Bible (${summary.downloaded}/${chapters.size})")
         ) {
-            confirmFullDownload()
+            confirmFullDownload(chapters)
         })
         if (summary.running + summary.queued > 0) {
             content.addView(outlinedButton(uiText("Dừng các mục đang tải", "Cancel pending downloads")) {
@@ -650,22 +678,20 @@ class MainActivity : Activity() {
         content.addView(textButton(uiText("Xóa toàn bộ audio ${currentChapter.audioVersion} đã tải", "Delete all downloaded ${currentChapter.audioVersion} audio")) {
             confirmDelete(chapters, uiText("toàn bộ ${currentChapter.audioVersion}", "all ${currentChapter.audioVersion} audio"))
         })
-        AlertDialog.Builder(this)
-            .setView(ScrollView(this).apply { addView(content) })
-            .setNegativeButton(uiText("Đóng", "Close"), null)
-            .show()
+        return ScrollView(this).apply { addView(content) }
     }
 
-    private fun confirmFullDownload() {
+    private fun confirmFullDownload(chapters: List<BibleChapter>) {
+        val audioVersion = chapters.first().audioVersion
         val missing = chapters.count { downloads.availableFile(it) == null }
         if (missing == 0) {
             toast(uiText("Toàn bộ audio đã được tải.", "All audio is already downloaded."))
             return
         }
         AlertDialog.Builder(this)
-            .setTitle(uiText("Tải toàn bộ ${currentChapter.audioVersion}?", "Download all ${currentChapter.audioVersion}?"))
+            .setTitle(uiText("Tải toàn bộ $audioVersion?", "Download all $audioVersion?"))
             .setMessage(
-                uiText("Còn $missing chương. ", "$missing chapters remaining. ") + audioStorageNote() + " " +
+                uiText("Còn $missing chương. ", "$missing chapters remaining. ") + audioStorageNote(audioVersion) + " " +
                     uiText("Quá trình tải tiếp tục khi đóng ứng dụng.", "Downloads continue when the app is closed.")
             )
             .setPositiveButton(uiText("Bắt đầu tải", "Download")) { _, _ ->
@@ -851,7 +877,7 @@ class MainActivity : Activity() {
         selectedTextVersion = code
         books = repository.books(code)
         preferences.edit().putString(KEY_TEXT_VERSION, code).apply()
-        val audioVersion = audioVersionForText(code)
+        val audioVersion = preferredAudioVersion()
         chapters = repository.chapters(audioVersion)
         if (audioVersion != currentChapter.audioVersion) {
             selectChapter(chapters.first { it.globalOrder == currentChapter.globalOrder })
@@ -860,10 +886,42 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun audioStorageNote(): String = if (currentChapter.audioVersion == "VIE1925") {
+    private fun preferredAudioVersion(): String = audioVersionForText(selectedTextVersion,
+        preferences.getString(KEY_ENGLISH_AUDIO, "NIVUK") ?: "NIVUK")
+
+    private fun selectAudioRecording(version: String) {
+        if (version !in ENGLISH_AUDIO_VERSIONS || selectedTextVersion != "NIV") return
+        preferences.edit().putString(KEY_ENGLISH_AUDIO, version).apply()
+        if (currentChapter.audioVersion == version) return
+        chapters = repository.chapters(version)
+        selectChapter(chapters.first { it.globalOrder == currentChapter.globalOrder })
+        refreshSettingsMenu()
+    }
+
+    private fun audioRecordingButton(): View = TextView(this).apply {
+        text = getString(R.string.audio_recording_choice, audioRecordingName(currentChapter.audioVersion))
+        textSize = 12f
+        setTextColor(colorMuted)
+        gravity = Gravity.CENTER
+        minimumHeight = dp(40)
+        contentDescription = uiText("Chọn bản thu audio", "Choose audio recording")
+        setOnClickListener {
+            AlertDialog.Builder(this@MainActivity)
+                .setTitle(uiText("Bản thu audio", "Audio recording"))
+                .setSingleChoiceItems(ENGLISH_AUDIO_VERSIONS.map(::audioRecordingName).toTypedArray(),
+                    ENGLISH_AUDIO_VERSIONS.indexOf(currentChapter.audioVersion)) { dialog, index ->
+                    selectAudioRecording(ENGLISH_AUDIO_VERSIONS[index])
+                    dialog.dismiss()
+                }
+                .setNegativeButton(uiText("Đóng", "Close"), null)
+                .show()
+        }
+    }
+
+    private fun audioStorageNote(audioVersion: String = currentChapter.audioVersion): String = if (audioVersion == "VIE1925") {
         uiText("Tổng bộ audio cần khoảng 1,16 GB.", "Full audio download: about 1.16 GB.")
     } else {
-        repository.nivAudioSizeBytes()?.let {
+        repository.audioSizeBytes(audioVersion)?.let {
             uiText("Tổng bộ audio cần khoảng ", "Full audio download: about ") + String.format(Locale.getDefault(), "%.2f GB.", it / 1_000_000_000.0)
         } ?: uiText("Dung lượng đã tải được hiển thị trong mục tải audio.", "Downloaded size is shown in audio downloads.")
     }
@@ -907,6 +965,10 @@ class MainActivity : Activity() {
             if (currentChapter.audioVersion == "NIV") {
                 append("\n\nThe Listener’s Bible®: NIV Edition. Audio © 2011 Max McLean. All rights reserved worldwide.")
                 append("\nhttps://www.bible.com/audio-bible/111/GEN.1.NIV")
+            } else if (currentChapter.audioVersion == "NIVUK") {
+                append("\n\nNIVUK (Anglicised), read by David Suchet. Audio © 2013 Biblica, Inc. All rights reserved worldwide.")
+                append("\nhttps://www.biblegateway.com/audio/suchet/nivuk/Gen.1")
+                append("\nAudio: NIVUK; displayed text: NIV (2011), not the Anglicised text edition.")
             }
         }
         section(uiText("Nguồn và bản quyền", "Sources and copyright"), sources, small = true)
@@ -968,8 +1030,8 @@ class MainActivity : Activity() {
             val playingOrder = PlaybackStateStore.currentOrder
             val audioVersion = PlaybackStateStore.audioVersion
             if (playingOrder > 0 && (playingOrder != currentChapter.globalOrder || audioVersion != currentChapter.audioVersion)) {
-                if (audioVersionForText(selectedTextVersion) != audioVersion) {
-                    selectedTextVersion = audioVersion
+                if (!audioMatchesText(selectedTextVersion, audioVersion)) {
+                    selectedTextVersion = textVersionForAudio(audioVersion)
                     books = repository.books(selectedTextVersion)
                     preferences.edit().putString(KEY_TEXT_VERSION, selectedTextVersion).apply()
                 }
@@ -1500,5 +1562,6 @@ class MainActivity : Activity() {
         private const val KEY_THEME_MODE = "themeMode"
         private const val KEY_TEXT_VERSION = "textVersion"
         private const val KEY_AUDIO_VERSION = "audioVersion"
+        private const val KEY_ENGLISH_AUDIO = "englishAudioVersion"
     }
 }

@@ -28,7 +28,8 @@ foreach ($script in Get-ChildItem -LiteralPath $PSScriptRoot -Filter '*.ps1') {
     if ($errors.Count) { throw "PowerShell syntax errors in $($script.Name): $errors" }
 }
 foreach ($file in @('app/src/main/assets/bible.db', 'app/src/main/assets/VIE1925_SOURCE.txt',
-    'app/src/main/assets/TEXT_VERSIONS_SOURCE.txt', 'app/src/main/assets/NIV_AUDIO_SOURCE.txt')) {
+    'app/src/main/assets/TEXT_VERSIONS_SOURCE.txt', 'app/src/main/assets/NIV_AUDIO_SOURCE.txt',
+    'app/src/main/assets/NIVUK_AUDIO_SOURCE.txt')) {
     if (!(Test-Path -LiteralPath (Join-Path $root $file) -PathType Leaf)) { throw "Required app data missing: $file" }
 }
 Write-Output 'Project layout, guide, release links, script syntax, and required data: OK'

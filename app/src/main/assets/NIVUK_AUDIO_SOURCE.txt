@@ -1,0 +1,24 @@
+NIVUK audio: Holy Bible, New International Version (Anglicised), Audio Edition
+Narrator: David Suchet. This is not the South Asian recording.
+Audio copyright 2013 Biblica, Inc. All rights reserved worldwide.
+Text copyright 1979, 1984, 2011 Biblica, Inc. All rights reserved worldwide.
+Public recording/player: https://www.biblegateway.com/audio/suchet/nivuk/Gen.1
+YouVersion edition reference: https://www.bible.com/audio-bible/113/MAT.1.NIVUK
+
+Source metadata is taken from the public BibleGateway NIVUK-by-Suchet player,
+because Bible.com chapter metadata returned HTTP 403 during this import.
+Each exact chapter URL is verified against the Suchet recording path, canonical
+book/chapter, and an audio/mpeg HEAD response. No authenticated endpoints or
+access-control bypasses are used.
+
+Imported following the application owner's stated authorization to use the audio.
+Permission for an external application and offline use must remain valid.
+Public availability is not a grant of redistribution rights.
+
+Only links and copyright notices are bundled. Recordings stream or download
+inside the app on request. Files use an NIVUK_ prefix; queue IDs use an offset
+of 2000000. Existing NIV/Max McLean and VIE1925 files, positions, queues, and
+loop presets are not overwritten. Rebuild with tools/import_nivuk_audio.py.
+
+This change adds audio only. Displayed English text remains NIV (YouVersion 111),
+not the Anglicised text edition. The audio selector explicitly says NIVUK.

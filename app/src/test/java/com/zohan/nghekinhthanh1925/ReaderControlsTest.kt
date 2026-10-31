@@ -170,7 +170,7 @@ class ReaderControlsTest {
             shadowOf(Looper.getMainLooper()).idle()
             assertFalse(dialog.isShowing)
             assertEquals("NIV", preferences.getString("textVersion", null))
-            assertEquals("NIV", PlaybackStateStore.audioVersion)
+            assertEquals("NIVUK", PlaybackStateStore.audioVersion)
             assertEquals(929, PlaybackStateStore.currentOrder)
             assertFalse(PlaybackStateStore.playWhenReady)
             val chapter = (control(activity, "Chọn chương") as TextView).text
@@ -272,7 +272,7 @@ class ReaderControlsTest {
     }
 
     @Test fun nivUsesEnglishChapterHeadingAndSettingsLabels() {
-        preferences.edit().putString("textVersion", "NIV").putInt("lastOrder", 2).commit()
+        preferences.edit().putString("textVersion", "NIV").putString("englishAudioVersion", "NIV").putInt("lastOrder", 2).commit()
         withReader { activity ->
             val texts = views(root(activity)).filterIsInstance<TextView>().map { it.text.toString() }
             assertTrue(texts.contains("Chapter 2"))
@@ -297,6 +297,99 @@ class ReaderControlsTest {
             val texts = views(root(activity)).filterIsInstance<TextView>().map { it.text.toString() }
             assertTrue(texts.contains("Chương 2"))
             assertFalse(texts.contains("Chapter 2"))
+        }
+    }
+
+    @Test fun nivukIsFirstDefaultAudioWhileTextStaysNivAndChooserRemembersNiv() {
+        preferences.edit().putString("textVersion", "NIV").putInt("lastOrder", 929).commit()
+        withReader { activity ->
+            assertEquals("NIVUK", PlaybackStateStore.audioVersion)
+            assertEquals("NIV", preferences.getString("textVersion", null))
+            assertTrue(views(root(activity)).filterIsInstance<TextView>().any { it.text.toString().contains("David Suchet") })
+            control(activity, "Choose audio recording").performClick()
+            val dialog = ShadowAlertDialog.getLatestAlertDialog()
+            assertEquals("NIVUK · David Suchet", dialog.listView.adapter.getItem(0))
+            assertEquals("NIV · Max McLean", dialog.listView.adapter.getItem(1))
+            assertEquals(0, dialog.listView.checkedItemPosition)
+            shadowOf(dialog).clickOnItem(1)
+            shadowOf(Looper.getMainLooper()).idle()
+            assertEquals("NIV", PlaybackStateStore.audioVersion)
+            assertEquals("NIV", preferences.getString("englishAudioVersion", null))
+            assertEquals(929, PlaybackStateStore.currentOrder)
+            assertFalse(PlaybackStateStore.playWhenReady)
+            control(activity, "Next chapter").performClick()
+            assertEquals("NIV", PlaybackStateStore.audioVersion)
+        }
+        withReader { activity ->
+            assertEquals("NIV", PlaybackStateStore.audioVersion)
+            control(activity, "Choose audio recording").performClick()
+            val dialog = ShadowAlertDialog.getLatestAlertDialog()
+            assertEquals(1, dialog.listView.checkedItemPosition)
+            dialog.dismiss()
+        }
+    }
+
+    @Test fun downloadRecordingOptionsStayOrderedAndVisibleWhileSwitching() {
+        preferences.edit().putString("textVersion", "NIV").putInt("lastOrder", 3).commit()
+        withReader { activity ->
+            control(activity, "Downloads").performClick()
+            val dialog = ShadowAlertDialog.getLatestAlertDialog()
+            fun choices() = views(dialog.window!!.decorView).filter { it.tag?.toString()?.startsWith("downloadAudio:") == true }
+            assertEquals(listOf("downloadAudio:NIVUK", "downloadAudio:NIV"), choices().map { it.tag })
+            assertTrue(choices().first().isSelected)
+            choices()[1].performClick()
+            assertTrue(dialog.isShowing)
+            assertTrue(choices()[1].isSelected)
+            assertEquals("NIV", PlaybackStateStore.audioVersion)
+            PlaybackStateStore.positionMs = 25_000
+            choices()[0].performClick()
+            assertTrue(dialog.isShowing)
+            assertTrue(choices()[0].isSelected)
+            assertEquals("NIVUK", PlaybackStateStore.audioVersion)
+            assertEquals(0, PlaybackStateStore.positionMs)
+            assertEquals(3, PlaybackStateStore.currentOrder)
+            assertFalse(PlaybackStateStore.playWhenReady)
+            assertTrue(views(dialog.window!!.decorView).filterIsInstance<TextView>().any { it.text.toString().contains("NIVUK") })
+            dialog.dismiss()
+        }
+    }
+
+    @Test fun activeNivIsNotInterruptedOnOpeningReaderButSwitchingToNivukKeepsPlaying() {
+        preferences.edit().putString("textVersion", "NIV").commit()
+        PlaybackStateStore.audioVersion = "NIV"
+        PlaybackStateStore.currentOrder = 3
+        PlaybackStateStore.isPlaying = true
+        PlaybackStateStore.playWhenReady = true
+        PlaybackStateStore.positionMs = 20_000
+        withReader { activity ->
+            assertEquals("NIV", PlaybackStateStore.audioVersion)
+            assertEquals(20_000, PlaybackStateStore.positionMs)
+            control(activity, "Choose audio recording").performClick()
+            shadowOf(ShadowAlertDialog.getLatestAlertDialog()).clickOnItem(0)
+            shadowOf(Looper.getMainLooper()).idle()
+            assertEquals("NIVUK", PlaybackStateStore.audioVersion)
+            assertTrue(PlaybackStateStore.playWhenReady)
+            assertEquals(0, PlaybackStateStore.positionMs)
+            assertEquals(3, PlaybackStateStore.currentOrder)
+            val intent = shadowOf(RuntimeEnvironment.getApplication()).nextStartedService
+            assertEquals(AudioPlayerService.ACTION_PLAY_ORDER, intent.action)
+        }
+    }
+
+    @Test fun nivukPlaybackTickerNeverSelectsANonexistentTextEdition() {
+        preferences.edit().putString("textVersion", "NIV").commit()
+        withReader { activity ->
+            PlaybackStateStore.audioVersion = "NIVUK"
+            PlaybackStateStore.currentOrder = 4
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(2))
+            assertEquals("NIV", preferences.getString("textVersion", null))
+            assertTrue(views(root(activity)).filterIsInstance<TextView>().any { it.text.toString() == "Chapter 4" })
+            val (_, rows) = menuRows(activity, "Settings")
+            rows.last().performClick()
+            val about = ShadowAlertDialog.getLatestAlertDialog()
+            val labels = views(about.window!!.decorView).filterIsInstance<TextView>().map { it.text.toString() }
+            assertTrue(labels.any { it.contains("David Suchet") && it.contains("2013") })
+            about.dismiss()
         }
     }
 

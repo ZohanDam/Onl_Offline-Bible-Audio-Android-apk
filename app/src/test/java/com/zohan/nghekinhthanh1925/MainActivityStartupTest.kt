@@ -57,6 +57,24 @@ class MainActivityStartupTest {
         RuntimeEnvironment.getApplication().getSharedPreferences("state", Context.MODE_PRIVATE)
             .edit().putString("textVersion", "NIV").putInt("lastOrder", 929).commit()
         launch("NIV")
+        assertEquals("NIVUK", PlaybackStateStore.audioVersion)
+    }
+
+    @Test fun savedMaxMcLeanChoiceStillOpensReader() {
+        RuntimeEnvironment.getApplication().getSharedPreferences("state", Context.MODE_PRIVATE)
+            .edit().putString("textVersion", "NIV").putString("englishAudioVersion", "NIV").commit()
+        launch("NIV")
+        assertEquals("NIV", PlaybackStateStore.audioVersion)
+    }
+
+    @Test fun activeNivukAudioOpensWithNivTextRatherThanANonexistentNivukTextVersion() {
+        PlaybackStateStore.audioVersion = "NIVUK"
+        PlaybackStateStore.currentOrder = 929
+        PlaybackStateStore.isPlaying = true
+        PlaybackStateStore.playWhenReady = true
+        launch("NIV")
+        assertEquals("NIVUK", PlaybackStateStore.audioVersion)
+        assertTrue(PlaybackStateStore.playWhenReady)
     }
 
     @Test fun savedDarkModeOpensReader() {

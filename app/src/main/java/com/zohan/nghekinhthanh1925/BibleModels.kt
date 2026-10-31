@@ -17,12 +17,30 @@ data class BibleChapter(
     val url: String,
     val audioVersion: String = "VIE1925"
 ) {
-    val downloadKey: Int get() = if (audioVersion == "NIV") 1_000_000 + globalOrder else globalOrder
+    val downloadKey: Int get() = when (audioVersion) {
+        "NIV" -> 1_000_000 + globalOrder
+        "NIVUK" -> 2_000_000 + globalOrder
+        else -> globalOrder
+    }
     val positionKey: String get() = if (audioVersion == "VIE1925") "position_$globalOrder"
         else "position_${audioVersion}_$globalOrder"
 }
 
-fun audioVersionForText(textVersion: String): String = if (textVersion == "NIV") "NIV" else "VIE1925"
+val ENGLISH_AUDIO_VERSIONS = listOf("NIVUK", "NIV")
+
+fun audioVersionForText(textVersion: String, englishAudioVersion: String = "NIVUK"): String =
+    if (textVersion == "NIV") englishAudioVersion.takeIf { it in ENGLISH_AUDIO_VERSIONS } ?: "NIVUK" else "VIE1925"
+
+fun audioMatchesText(textVersion: String, audioVersion: String): Boolean =
+    if (textVersion == "NIV") audioVersion in ENGLISH_AUDIO_VERSIONS else audioVersion == "VIE1925"
+
+fun textVersionForAudio(audioVersion: String): String = if (audioVersion in ENGLISH_AUDIO_VERSIONS) "NIV" else "VIE1925"
+
+fun audioRecordingName(audioVersion: String): String = when (audioVersion) {
+    "NIVUK" -> "NIVUK · David Suchet"
+    "NIV" -> "NIV · Max McLean"
+    else -> "VIE1925"
+}
 
 data class BibleVerse(
     val number: String,

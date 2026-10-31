@@ -22,4 +22,4 @@ All three editions preserve the source verse labels and combined verses.
 Only verse text is imported; editorial notes and cross-references are excluded.
 NIV footnote-only markers for omitted verses are excluded from the body.
 Chapter text is bundled in the APK; runtime Internet access is not needed
-for reading. Existing audio remains VIE1925.
+for reading. Audio is separate: VIE1925, NIV (Max McLean), or NIVUK (David Suchet).
