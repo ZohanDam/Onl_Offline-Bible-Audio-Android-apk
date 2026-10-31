@@ -63,6 +63,9 @@ class AppUpdateTest {
 
     private fun release(): AppRelease = AppUpdateClient.parseManifest(manifest(), context.packageName)
 
+    private fun repository(name: String = AppUpdateClient.REPOSITORY): JSONObject = JSONObject()
+        .put("id", AppUpdateClient.REPOSITORY_ID).put("full_name", name)
+
     private class Response(url: URL, private val body: ByteArray, private val status: Int = 200,
                            private val headers: Map<String, String> = emptyMap()) : HttpURLConnection(url) {
         override fun connect() = Unit
@@ -80,7 +83,7 @@ class AppUpdateTest {
         }
         for (url in listOf("http://github.com/file.apk", "https://example.com/file.apk",
             "https://github.com/other/repository/releases/download/v2/app.apk")) {
-            assertThrows(IllegalArgumentException::class.java) {
+            assertThrows(UpdateSourceException::class.java) {
                 AppUpdateClient.parseManifest(manifest().put("apkUrl", url), context.packageName)
             }
         }
@@ -88,10 +91,10 @@ class AppUpdateTest {
 
     @Test fun updaterUsesRenamedRepositoryWithoutRelaxingUrlValidation() {
         assertEquals("ZohanDam/Onl_Offline-Bible-Audio-Android-apk", AppUpdateClient.REPOSITORY)
-        assertEquals("https://api.github.com/repos/ZohanDam/Onl_Offline-Bible-Audio-Android-apk/releases/latest",
+        assertEquals("https://api.github.com/repositories/1258404001/releases/latest",
             AppUpdateClient.LATEST_RELEASE_URL)
         assertEquals(assetUrl, release().apkUrl)
-        assertThrows(IllegalArgumentException::class.java) {
+        assertThrows(UpdateSourceException::class.java) {
             AppUpdateClient.parseManifest(manifest().put("apkUrl",
                 "https://github.com/ZohanDam/BibleAudioVIE1934-Android-Apk/releases/download/v2.24/app.apk"), context.packageName)
         }
@@ -154,11 +157,14 @@ class AppUpdateTest {
 
     @Test fun redirectsCannotLeaveTrustedHttpsHosts() {
         val client = AppUpdateClient(context) { Response(it, byteArrayOf(), 302, mapOf("Location" to "http://example.com/update.json")) }
-        assertThrows(IllegalArgumentException::class.java) { client.latest() }
+        assertThrows(UpdateSourceException::class.java) { client.latest() }
     }
 
     @Test fun noPublishedReleaseDoesNotClaimVersionIsCurrent() {
-        assertNull(AppUpdateClient(context) { Response(it, byteArrayOf(), 404) }.latest())
+        assertNull(AppUpdateClient(context) {
+            if (it.toString() == AppUpdateClient.REPOSITORY_API_URL) Response(it, repository().toString().toByteArray())
+            else Response(it, byteArrayOf(), 404)
+        }.latest())
     }
 
     @Test fun latestReleaseAndManifestMustReferenceSameAsset() {
@@ -167,11 +173,105 @@ class AppUpdateTest {
             .put(JSONObject().put("name", "update.json").put("browser_download_url", metaUrl))
             .put(JSONObject().put("name", "app.apk").put("browser_download_url", assetUrl).put("size", bytes.size)))
         val client = AppUpdateClient(context) { url ->
-            Response(url, (if (url.toString() == AppUpdateClient.LATEST_RELEASE_URL) apiJson else manifest()).toString().toByteArray())
+            Response(url, when (url.toString()) {
+                AppUpdateClient.REPOSITORY_API_URL -> repository()
+                AppUpdateClient.LATEST_RELEASE_URL -> apiJson
+                else -> manifest()
+            }.toString().toByteArray())
         }
         assertEquals(21L, client.latest()!!.versionCode)
         apiJson.getJSONArray("assets").remove(1)
         assertThrows(IllegalArgumentException::class.java) { client.latest() }
+    }
+
+    @Test fun verifiedRepositoryRenameSupportsManifestAndVerifiedDownload() {
+        val renamed = "ZohanDam/Bible-Audio-Renamed"
+        val metaUrl = "https://github.com/$renamed/releases/download/v2.19/update.json"
+        val apkUrl = "https://github.com/$renamed/releases/download/v2.19/app.apk"
+        val api = JSONObject().put("assets", JSONArray()
+            .put(JSONObject().put("name", "update.json").put("browser_download_url", metaUrl))
+            .put(JSONObject().put("name", "app.apk").put("browser_download_url", apkUrl).put("size", bytes.size)))
+        val requested = mutableListOf<String>()
+        val client = AppUpdateClient(context) { url ->
+            requested.add(url.toString())
+            when (url.toString()) {
+                AppUpdateClient.REPOSITORY_API_URL -> Response(url, repository(renamed).toString().toByteArray())
+                AppUpdateClient.LATEST_RELEASE_URL -> Response(url, api.toString().toByteArray())
+                metaUrl -> Response(url, manifest().put("apkUrl", apkUrl).toString().toByteArray())
+                apkUrl -> {
+                    val pending = File(context.cacheDir, "app-updates").listFiles()!!.single { it.name.startsWith("pending-") }
+                    shadowOf(context.packageManager).setPackageArchiveInfo(pending.absolutePath, info(21))
+                    Response(url, bytes)
+                }
+                else -> throw AssertionError("Unexpected URL: $url")
+            }
+        }
+        val release = client.latest()!!
+        assertEquals(apkUrl, release.apkUrl)
+        assertArrayEquals(bytes, client.download(release, { false }, {}).readBytes())
+        assertEquals(listOf(AppUpdateClient.REPOSITORY_API_URL, AppUpdateClient.LATEST_RELEASE_URL, metaUrl, apkUrl), requested)
+    }
+
+    @Test fun wrongRepositoryIdentityStopsBeforeReleaseLookup() {
+        val requested = mutableListOf<String>()
+        val client = AppUpdateClient(context) { url ->
+            requested.add(url.toString())
+            Response(url, repository().put("id", 999).toString().toByteArray())
+        }
+        assertThrows(UpdateSourceException::class.java) { client.latest() }
+        assertEquals(listOf(AppUpdateClient.REPOSITORY_API_URL), requested)
+    }
+
+    @Test fun externalManifestIsRejectedBeforeFetchingIt() {
+        val requested = mutableListOf<String>()
+        val client = AppUpdateClient(context) { url ->
+            requested.add(url.toString())
+            val json = if (url.toString() == AppUpdateClient.REPOSITORY_API_URL) repository() else
+                JSONObject().put("assets", JSONArray().put(JSONObject().put("name", "update.json")
+                    .put("browser_download_url", "https://github.com/other/repo/releases/download/v2/update.json")))
+            Response(url, json.toString().toByteArray())
+        }
+        assertThrows(UpdateSourceException::class.java) { client.latest() }
+        assertEquals(listOf(AppUpdateClient.REPOSITORY_API_URL, AppUpdateClient.LATEST_RELEASE_URL), requested)
+    }
+
+    @Test fun releaseUrlAllowsRepositoryCasingButRejectsAmbiguousPaths() {
+        AppUpdateClient.requireReleaseUrl(assetUrl.replace(AppUpdateClient.REPOSITORY, AppUpdateClient.REPOSITORY.lowercase())
+            .replace("github.com", "GITHUB.COM"))
+        val prefix = "https://github.com/${AppUpdateClient.REPOSITORY}/releases/download/"
+        for (url in listOf("not a URL", "$prefix/v2/app.apk", "${prefix}v2/app.apk/extra",
+            "${prefix}../app.apk", "${prefix}v2/%61pp.apk", "${prefix}v2/app.apk?redirect=1",
+            "${prefix}v2/app.apk#fragment", assetUrl.replace("github.com/", "user@github.com/"),
+            assetUrl.replace("github.com/", "github.com:444/"), assetUrl.replace("releases/download", "RELEASES/download"),
+            assetUrl.replace("/releases/", "-other/releases/"), "${prefix}v2/..\\app.apk")) {
+            assertThrows(url, UpdateSourceException::class.java) { AppUpdateClient.requireReleaseUrl(url) }
+        }
+    }
+
+    @Test fun rejectedSourceOffersOfficialRecoveryWithoutDownloadingOrInstalling() {
+        val activity = Robolectric.buildActivity(Activity::class.java).setup()
+        val client = AppUpdateClient(context) { url ->
+            Response(url, repository().put("id", 999).toString().toByteArray())
+        }
+        val controller = AppUpdateController(activity.get(), client, ImmediateExecutor())
+        try {
+            controller.check()
+            shadowOf(Looper.getMainLooper()).idle()
+            assertFalse(File(context.cacheDir, "app-updates/update.apk").exists())
+            assertNull(shadowOf(activity.get()).nextStartedActivity)
+            val dialog = ShadowAlertDialog.getLatestAlertDialog()
+            assertTrue(dialog.isShowing)
+            dialog.getButton(android.app.AlertDialog.BUTTON_POSITIVE).performClick()
+            shadowOf(Looper.getMainLooper()).idle()
+            val browser = shadowOf(activity.get()).nextStartedActivity
+            assertNotNull("Recovery must open the official download page", browser)
+            assertEquals(Intent.ACTION_VIEW, browser.action)
+            assertEquals(AppUpdateClient.LATEST_RELEASE_PAGE, browser.data.toString())
+            assertNull(browser.type)
+        } finally {
+            controller.close()
+            activity.pause().stop().destroy()
+        }
     }
 
     private class ImmediateExecutor : AbstractExecutorService() {
@@ -191,6 +291,7 @@ class AppUpdateTest {
             .put(JSONObject().put("name", "app.apk").put("browser_download_url", assetUrl).put("size", bytes.size)))
         val client = AppUpdateClient(context) { url ->
             when (url.toString()) {
+                AppUpdateClient.REPOSITORY_API_URL -> Response(url, repository().toString().toByteArray())
                 AppUpdateClient.LATEST_RELEASE_URL -> Response(url, api.toString().toByteArray())
                 metaUrl -> Response(url, manifest().toString().toByteArray())
                 else -> {

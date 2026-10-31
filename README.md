@@ -15,8 +15,10 @@ GitHub Releases contains installers. The repository contains source code, not AP
    downloaded audio and settings.
 
 For later updates, use **Settings > Check for updates** inside the app.
-After the repository rename, versions 2.24 and earlier need one manual APK update
-to 2.25 or later; install over the existing app to preserve downloads.
+The installed version is shown in **Settings > About** (the information icon).
+If an older updater says "Untrusted release URL", download the latest APK above
+and install it over the existing app once. Version 2.27 and later identify the
+update repository by its permanent GitHub ID, so renames do not break validation.
 The original 2.14 signing key differs; updating that installation requires its
 original private key. Versions 2.15 and later share the current signing identity.
 

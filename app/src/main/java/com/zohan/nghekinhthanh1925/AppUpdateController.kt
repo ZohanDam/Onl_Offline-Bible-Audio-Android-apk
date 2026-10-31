@@ -185,7 +185,23 @@ class AppUpdateController(
 
     private fun failed(token: AtomicBoolean, error: Exception) {
         result(token) {
-            if (error !is CancellationException) message(uiText("Không thể cập nhật. Kiểm tra kết nối hoặc thử lại sau.",
+            if (error is UpdateSourceException) {
+                dialog = AlertDialog.Builder(activity)
+                    .setTitle(uiText("Nguồn cập nhật đã thay đổi", "Update source changed"))
+                    .setMessage(uiText(
+                        "Không thể xác minh địa chỉ cập nhật. Mở trang tải chính thức và cài APK đè lên ứng dụng. Không gỡ cài đặt để giữ audio đã tải.",
+                        "The update address could not be verified. Open the official download page and install the APK over this app. Do not uninstall; keep downloaded audio."
+                    ))
+                    .setPositiveButton(uiText("Mở trang tải", "Open downloads")) { _, _ ->
+                        try {
+                            activity.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(AppUpdateClient.LATEST_RELEASE_PAGE)))
+                        } catch (_: Exception) {
+                            message(AppUpdateClient.LATEST_RELEASE_PAGE)
+                        }
+                    }
+                    .setNegativeButton(uiText("Đóng", "Close"), null)
+                    .show()
+            } else if (error !is CancellationException) message(uiText("Không thể cập nhật. Kiểm tra kết nối hoặc thử lại sau.",
                 "Update failed. Check the connection or try again later.") + "\n\n${error.message.orEmpty().take(200)}")
         }
     }

@@ -23,8 +23,8 @@ android {
         applicationId = "com.zohan.nghekinhthanh1925"
         minSdk = 26
         targetSdk = 35
-        versionCode = 28
-        versionName = "2.26"
+        versionCode = 29
+        versionName = "2.27"
     }
 
     buildTypes {

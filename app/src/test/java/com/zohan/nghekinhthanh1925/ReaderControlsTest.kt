@@ -263,6 +263,8 @@ class ReaderControlsTest {
         val dialog = ShadowAlertDialog.getLatestAlertDialog()
         val texts = views(dialog.window!!.decorView).filterIsInstance<TextView>().map { it.text.toString() }
         assertTrue(texts.contains("Giới thiệu ứng dụng"))
+        val installed = activity.packageManager.getPackageInfo(activity.packageName, 0)
+        assertTrue(texts.any { it.contains("Phiên bản ${installed.versionName} (${AppUpdateClient.versionCode(installed)})") })
         val sections = listOf("Ứng dụng", "Nội dung", "Audio offline", "Nguồn và bản quyền")
         assertTrue(sections.all { texts.contains(it) })
         assertEquals(sections.map { texts.indexOf(it) }.sorted(), sections.map { texts.indexOf(it) })
@@ -284,6 +286,8 @@ class ReaderControlsTest {
             val dialog = ShadowAlertDialog.getLatestAlertDialog()
             val about = views(dialog.window!!.decorView).filterIsInstance<TextView>().map { it.text.toString() }
             assertTrue(about.contains("About this app"))
+            val installed = activity.packageManager.getPackageInfo(activity.packageName, 0)
+            assertTrue(about.any { it.contains("Version ${installed.versionName} (${AppUpdateClient.versionCode(installed)})") })
             assertTrue(about.contains("Sources and copyright"))
             assertTrue(about.any { it.contains("Max McLean") })
             assertTrue(about.any { it.contains("Biblica") })

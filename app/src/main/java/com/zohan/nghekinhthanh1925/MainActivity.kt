@@ -948,7 +948,9 @@ class MainActivity : Activity() {
         section(uiText("Ứng dụng", "The app"), uiText(
             "Ứng dụng bởi Zohan, với mong muốn nghe Kinh Thánh offline.",
             "By Zohan, for listening to the Bible offline."
-        ))
+        ) + "\n" + packageManager.getPackageInfo(packageName, 0).let {
+            uiText("Phiên bản", "Version") + " ${it.versionName} (${AppUpdateClient.versionCode(it)})"
+        })
         section(uiText("Nội dung", "Bible content"), uiText(
             "66 sách • 1.189 chương\nBản văn: ${textVersion.code}\nAudio: ${currentChapter.audioVersion}",
             "66 books • 1,189 chapters\nText: ${textVersion.code}\nAudio: ${currentChapter.audioVersion}"

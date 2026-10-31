@@ -23,13 +23,22 @@ data class AppRelease(
     val notes: String
 )
 
+class UpdateSourceException(message: String) : IOException(message)
+
 class AppUpdateClient(
     private val context: Context,
     private val connectionFactory: (URL) -> HttpURLConnection = { it.openConnection() as HttpURLConnection }
 ) {
+    private var releaseRepository = REPOSITORY
     fun currentVersion(): PackageInfo = context.packageManager.getPackageInfo(context.packageName, 0)
 
     fun latest(): AppRelease? {
+        val repositoryJson = readJson(REPOSITORY_API_URL) ?: throw UpdateSourceException("Missing update repository")
+        if (repositoryJson.optLong("id") != REPOSITORY_ID) throw UpdateSourceException("Update repository identity changed")
+        val currentRepository = repositoryJson.optString("full_name")
+        if (!currentRepository.matches(Regex("[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+"))) {
+            throw UpdateSourceException("Invalid update repository name")
+        }
         val releaseJson = readJson(LATEST_RELEASE_URL, allowNotFound = true) ?: return null
         require(!releaseJson.optBoolean("draft") && !releaseJson.optBoolean("prerelease")) { "Not a stable release" }
         val assets = releaseJson.getJSONArray("assets")
@@ -37,12 +46,13 @@ class AppUpdateClient(
             .singleOrNull { it.optString("name") == "update.json" }
             ?: throw IOException("Bản phát hành chưa có thông tin cập nhật.")
         val manifestUrl = manifestAsset.getString("browser_download_url")
-        requireReleaseUrl(manifestUrl)
+        requireReleaseUrl(manifestUrl, currentRepository)
         val manifest = readJson(manifestUrl) ?: throw IOException("Thiếu thông tin cập nhật.")
-        val release = parseManifest(manifest, context.packageName)
+        val release = parseManifest(manifest, context.packageName, currentRepository)
         require((0 until assets.length()).map { assets.getJSONObject(it) }.any {
             it.optString("browser_download_url") == release.apkUrl && it.optLong("size") == release.sizeBytes
         }) { "APK does not match the published release" }
+        releaseRepository = currentRepository
         return release
     }
 
@@ -51,7 +61,7 @@ class AppUpdateClient(
         cancelled: () -> Boolean,
         progress: (Int) -> Unit
     ): File {
-        requireReleaseUrl(release.apkUrl)
+        requireReleaseUrl(release.apkUrl, releaseRepository)
         val directory = File(context.cacheDir, "app-updates").apply {
             if (!mkdirs() && !isDirectory) throw IOException("Không thể tạo thư mục cập nhật.")
         }
@@ -143,14 +153,17 @@ class AppUpdateClient(
     private fun openHttps(address: String): HttpURLConnection {
         var url = URL(address)
         repeat(6) {
-            require(url.protocol == "https" && url.host in DOWNLOAD_HOSTS && url.userInfo == null &&
-                (url.port == -1 || url.port == 443)) { "Untrusted update host" }
+            if (url.protocol != "https" || DOWNLOAD_HOSTS.none { it.equals(url.host, ignoreCase = true) } ||
+                url.userInfo != null || (url.port != -1 && url.port != 443)) {
+                throw UpdateSourceException("Untrusted update host")
+            }
             val connection = connectionFactory(url).apply {
                 instanceFollowRedirects = false
                 connectTimeout = 15_000
                 readTimeout = 30_000
                 setRequestProperty("User-Agent", "NgheKinhThanh1925-Updater")
                 setRequestProperty("Accept", if (url.host == "api.github.com") "application/vnd.github+json" else "*/*")
+                setRequestProperty("Cache-Control", "no-cache")
             }
             val status = try {
                 connection.responseCode
@@ -169,10 +182,13 @@ class AppUpdateClient(
 
     companion object {
         const val REPOSITORY = "ZohanDam/Onl_Offline-Bible-Audio-Android-apk"
-        const val LATEST_RELEASE_URL = "https://api.github.com/repos/$REPOSITORY/releases/latest"
+        const val REPOSITORY_ID = 1258404001L
+        const val REPOSITORY_API_URL = "https://api.github.com/repositories/$REPOSITORY_ID"
+        const val LATEST_RELEASE_URL = "$REPOSITORY_API_URL/releases/latest"
+        const val LATEST_RELEASE_PAGE = "https://github.com/$REPOSITORY/releases/latest"
         private val DOWNLOAD_HOSTS = setOf("api.github.com", "github.com", "release-assets.githubusercontent.com", "objects.githubusercontent.com")
 
-        fun parseManifest(json: JSONObject, packageName: String): AppRelease {
+        fun parseManifest(json: JSONObject, packageName: String, repository: String = REPOSITORY): AppRelease {
             require(json.getString("packageName") == packageName) { "Wrong application package" }
             val release = AppRelease(
                 json.getLong("versionCode"), json.getString("versionName"), json.getInt("minimumSdk"),
@@ -181,7 +197,7 @@ class AppUpdateClient(
             )
             require(release.versionCode > 0 && release.versionName.length in 1..80 && release.minimumSdk >= 26) { "Invalid release version" }
             require(release.sizeBytes in 1..209_715_200L && release.sha256.matches(Regex("[a-f0-9]{64}"))) { "Invalid APK digest or size" }
-            requireReleaseUrl(release.apkUrl)
+            requireReleaseUrl(release.apkUrl, repository)
             return release
         }
 
@@ -201,11 +217,19 @@ class AppUpdateClient(
             require(expected.isNotEmpty() && signatures(archive) == expected) { "APK signing key does not match this installation" }
         }
 
-        internal fun requireReleaseUrl(address: String) {
-            val url = URL(address)
-            require(url.protocol == "https" && url.host == "github.com" && url.userInfo == null &&
-                (url.port == -1 || url.port == 443) && url.path.startsWith("/$REPOSITORY/releases/download/") &&
-                url.query == null && url.ref == null && !url.path.contains("..") && !url.path.contains('%')) { "Untrusted release URL" }
+        internal fun requireReleaseUrl(address: String, repository: String = REPOSITORY) {
+            val url = try { URL(address) } catch (_: java.net.MalformedURLException) {
+                throw UpdateSourceException("Invalid update link")
+            }
+            val prefix = "/$repository/releases/download/"
+            val path = url.path
+            val repositoryPath = "/$repository/"
+            val valid = url.protocol == "https" && url.host.equals("github.com", ignoreCase = true) && url.userInfo == null &&
+                (url.port == -1 || url.port == 443) && path.startsWith(repositoryPath, ignoreCase = true) &&
+                path.substring(repositoryPath.length).startsWith("releases/download/") &&
+                path.drop(prefix.length).split('/').let { it.size == 2 && it.all(String::isNotEmpty) } &&
+                url.query == null && url.ref == null && !path.contains("..") && !path.contains('%') && !path.contains('\\')
+            if (!valid) throw UpdateSourceException("The update link does not belong to the verified repository")
         }
 
         private fun checkCancelled(cancelled: () -> Boolean) {
